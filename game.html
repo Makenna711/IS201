@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Tetris-like Game</title>
+<style>
+  :root{
+    --bg:#0f1721;
+    --panel:#1e2a39;
+    --muted:#000000;
+    --accent:#f6c84c;
+    --card:#0d1724;
+  }
+  html,body{height:100%;margin:0;background:linear-gradient(180deg,#746d63 0%, #bdaea3 100%);font-family:Inter,system-ui,Arial;color:#000000}
+  .wrap{
+    max-width:1000px;
+    margin:20px auto;
+    display:grid;
+    grid-template-columns: 1fr 260px;
+    gap:20px;
+    align-items:start;
+    padding:18px;
+  }
+
+  /* Game stage card */
+  .stage-card{
+    background:linear-gradient(180deg, #bdaea3 100%, #746d63 0%);
+    border-radius:14px;
+    padding:16px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.6), inset 0 2px 8px rgba(255,255,255,0.02);
+  }
+
+  .stage-outer{
+    width:100%;
+    /* keep aspect ratio ~ 10 cols x 20 rows (taller) but responsive */
+    display:flex;
+    justify-content:center;
+    align-items:start;
+    padding:10px;
+  }
+
+  /* The canvas will scale to available width but keep aspect ratio */
+  .game-canvas{
+    width:100%;
+    max-width:640px;
+    aspect-ratio:10 / 20; /* plays like standard 10x20 */
+    background:linear-gradient(180deg,#bdaea3, #746d63);
+    border-radius:10px;
+    box-shadow: inset 0 8px 24px rgba(0,0,0,0.6);
+  }
+
+  /* Right-side controls */
+  .sidebar{
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+  }
+  .card{
+    background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.04));
+    border-radius:10px;
+    padding:12px;
+    min-height:70px;
+    box-shadow: inset 0 2px 8px rgba(255,255,255,0.02);
+  }
+  .label{font-size:14px; color:var(--muted)}
+  .bigscore{font-size:44px;color:var(--accent); text-align:center;}
+  .small{font-size:13px;color:var(--muted); text-align:center}
+  .next-canvas{width:100%; height:120px; background:#bdaea3; border-radius:8px}
+  .controls-row{display:flex; gap:8px; justify-content:center; margin-top:8px}
+  .btn{
+    background:rgba(255,255,255,0.03);
+    border:1px solid rgba(255,255,255,0.03);
+    color:#000000;
+    padding:8px 12px;
+    border-radius:8px;
+    cursor:pointer;
+    font-size:14px;
+  }
+  .btn:active{transform:translateY(1px)}
+  .hint{font-size:13px;color:var(--muted); line-height:1.3; text-align:center}
+
+  footer{max-width:1000px;margin:12px auto;color:#98aabc;font-size:12px;text-align:center}
+
+  @media (max-width:900px){
+    .wrap{grid-template-columns:1fr; padding:12px}
+    .sidebar{order:2}
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="stage-card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div class="label">TETRIS-LIKE</div>
+      <div class="hint">Use ← → to move • ↑ to rotate • ↓ soft drop • Space hard drop • P pause</div>
+    </div>
+
+    <div class="stage-outer">
+      <canvas id="game" class="game-canvas"></canvas>
+    </div>
+
+    <div style="display:flex;justify-content:center;margin-top:10px;gap:8px">
+      <button id="pauseBtn" class="btn">Pause</button>
+      <button id="restartBtn" class="btn">Restart</button>
+    </div>
+  </div>
+
+  <div class="sidebar">
+    <div class="card">
+      <div class="label">Score</div>
+      <div id="score" class="bigscore">0</div>
+      <div id="lines" class="small">Lines: 0</div>
+    </div>
+
+    <div class="card">
+      <div class="label">Next</div>
+      <canvas id="next" class="next-canvas"></canvas>
+    </div>
+
+    <div class="card">
+      <div class="label">Controls</div>
+      <p class="hint">← → Move • ↑ Rotate • ↓ Soft drop • Space Hard drop • P Pause</p>
+      <div class="controls-row">
+        <button id="leftBtn" class="btn">◀</button>
+        <button id="rotateBtn" class="btn">⤺</button>
+        <button id="rightBtn" class="btn">▶</button>
+        <button id="downBtn" class="btn">▼</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>Built with vanilla JavaScript &lt;canvas&gt; — responsive and embeddable</footer>
+
+<script>
+/* ---------- Tetris-like game (single-file) ----------
+  Features:
+  - 10x20 grid
+  - Seven tetrominoes
+  - Rotation (with simple wall-kick)
+  - Line clear, score, lines
+  - Next preview
+  - Pause / Restart
+  - Responsive canvas scaling
+----------------------------------------------------*/
+
+// CONFIG
+const COLS = 10;
+const ROWS = 20;
+const BLOCK = 30; // logical block size (canvas internal units)
+const SCALE = window.devicePixelRatio || 1; // high-DPI support
+
+// Tetromino definitions (4x4 matrices)
+const SHAPES = {
+  I: [
+    [[0,0,0,0],
+     [1,1,1,1],
+     [0,0,0,0],
+     [0,0,0,0]],
+    ],
+  J: [
+    [[1,0,0],
+     [1,1,1],
+     [0,0,0]],
+    ],
+  L: [
+    [[0,0,1],
+     [1,1,1],
+     [0,0,0]],
+    ],
+  O: [
+    [[1,1],
+     [1,1]],
+    ],
+  S: [
+    [[0,1,1],
+     [1,1,0],
+     [0,0,0]],
+    ],
+  T: [
+    [[0,1,0],
+     [1,1,1],
+     [0,0,0]],
+    ],
+  Z: [
+    [[1,1,0],
+     [0,1,1],
+     [0,0,0]],
+    ]
+};
+
+const COLORS = {
+  I: '#00e5ff',
+  J: '#0033ff',
+  L: '#ff8c00',
+  O: '#ffd400',
+  S: '#00d34b',
+  T: '#b100ff',
+  Z: '#ff2d2d'
+};
+
+// Helper: deep clone
+function clone(obj){ return JSON.parse(JSON.stringify(obj)); }
+
+// Canvas setup (responsive)
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const nextCanvas = document.getElementById('next');
+const nctx = nextCanvas.getContext('2d');
+
+function resizeCanvases(){
+  // The CSS sets the display size; we set canvas internal pixel size for crispness
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.round(rect.width * SCALE);
+  canvas.height = Math.round(rect.height * SCALE);
+  ctx.setTransform(SCALE,0,0,SCALE,0,0); // map drawing to CSS pixels
+  // Next preview
+  const nr = nextCanvas.getBoundingClientRect();
+  nextCanvas.width = Math.round(nr.width * SCALE);
+  nextCanvas.height = Math.round(nr.height * SCALE);
+  nctx.setTransform(SCALE,0,0,SCALE,0,0);
+  drawEverything();
+}
+window.addEventListener('resize', resizeCanvases, {passive:true});
+
+// Board internal representation: 2D array of 0 or {color}
+let board = createMatrix(COLS, ROWS);
+
+// Player (falling piece)
+let player = {
+  pos: {x: 3, y: 0},
+  matrix: null,
+  name: null
+};
+
+let nextPiece = null;
+let score = 0;
+let lines = 0;
+let dropCounter = 0;
+let dropInterval = 1000; // ms (will speed up on level)
+let lastTime = 0;
+let paused = false;
+let gameOver = false;
+
+// Utilities
+function createMatrix(width, height){
+  const m = [];
+  for (let y=0;y<height;y++){
+    m.push(new Array(width).fill(0));
+  }
+  return m;
+}
+
+function drawCell(x,y,color,ctxRef){
+  const cs = Math.min(canvas.width / SCALE, canvas.height / SCALE) / (COLS); // approximate
+  // For crisp blocks, use fixed logical size BLOCK
+  const blockW = (canvas.width / SCALE) / COLS;
+  const blockH = (canvas.height / SCALE) / ROWS;
+  (ctxRef || ctx).fillStyle = color;
+  (ctxRef || ctx).fillRect(x*blockW, y*blockH, blockW-1, blockH-1);
+  // slight shading
+  (ctxRef || ctx).globalAlpha = 0.08;
+  (ctxRef || ctx).fillStyle = '#ffffff';
+  (ctxRef || ctx).fillRect(x*blockW+1, y*blockH+1, 2, 2);
+  (ctxRef || ctx).globalAlpha = 1;
+}
+
+function drawMatrix(matrix, offset, colorMap, ctxRef){
+  const drawCtx = ctxRef || ctx;
+  for (let y=0;y<matrix.length;y++){
+    for (let x=0;x<matrix[y].length;x++){
+      if (matrix[y][x]){
+        const name = matrix[y][x] === 1 ? colorMap : matrix[y][x];
+        // If matrix contains a key (like 'I'), interpret appropriately. We pass colors directly where needed.
+        drawCell(x + offset.x, y + offset.y, typeof name === 'string' ? name : colorMap, drawCtx);
+      }
+    }
+  }
+}
+
+// Convert tetromino matrix to numeric matrix where filled cells = 1 (for collision)
+function matrixFromShape(shape){
+  // shape provided is an array [[...]] OR smaller arrays; return matrix 2D of 0/1
+  return shape.map(row => row.slice());
+}
+
+// Collision test
+function collide(board, player){
+  const m = player.matrix;
+  for (let y=0;y<m.length;y++){
+    for (let x=0;x<m[y].length;x++){
+      if (m[y][x]){
+        const bx = x + player.pos.x;
+        const by = y + player.pos.y;
+        if (by >= ROWS || bx < 0 || bx >= COLS) return true;
+        if (board[by][bx]) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Merge piece into board
+function merge(board, player, color){
+  const m = player.matrix;
+  for (let y=0;y<m.length;y++){
+    for (let x=0;x<m[y].length;x++){
+      if (m[y][x]){
+        board[y + player.pos.y][x + player.pos.x] = color;
+      }
+    }
+  }
+}
+
+// Clear lines
+function sweep(){
+  let rowCount = 0;
+  outer: for (let y = ROWS -1; y >= 0; --y) {
+    for (let x = 0; x < COLS; ++x) {
+      if (!board[y][x]) {
+        continue outer;
+      }
+    }
+    // Row is full
+    const row = board.splice(y,1)[0].fill(0);
+    board.unshift(row);
+    ++y; // check same y again as rows shifted down
+    rowCount++;
+  }
+  if (rowCount > 0){
+    lines += rowCount;
+    // scoring simple: 100 * (2^(rows-1))
+    score += rowCount === 1 ? 100 : rowCount === 2 ? 250 : rowCount === 3 ? 400 : 600;
+    document.getElementById('score').textContent = score;
+    document.getElementById('lines').textContent = 'Lines: ' + lines;
+    // speed up slightly
+    dropInterval = Math.max(150, 1000 - Math.floor(lines/5) * 60);
+  }
+}
+
+// Create a random tetromino
+function randomPiece(){
+  const keys = Object.keys(SHAPES);
+  const name = keys[Math.floor(Math.random()*keys.length)];
+  // use the base matrix for that piece
+  const raw = SHAPES[name][0];
+  const matrix = clone(raw);
+  // Normalize to numeric 1s to simplify collision/drawing; we'll store name separately for color
+  for (let y=0;y<matrix.length;y++){
+    for (let x=0;x<matrix[y].length;x++){
+      matrix[y][x] = matrix[y][x] ? 1 : 0;
+    }
+  }
+  return {name, matrix};
+}
+
+// Player reset (spawn next piece)
+function playerReset(){
+  if (!nextPiece) nextPiece = randomPiece();
+  player.matrix = nextPiece.matrix;
+  player.name = nextPiece.name;
+  player.pos.y = 0;
+  // center horizontally
+  player.pos.x = Math.floor((COLS - player.matrix[0].length) / 2);
+  nextPiece = randomPiece();
+  // If spawn collides immediately -> game over
+  if (collide(board, player)){
+    gameOver = true;
+    paused = true;
+    alert('Game over! Score: ' + score);
+  }
+  drawNext();
+}
+
+// Rotate a matrix clockwise (in-place copy)
+function rotate(matrix){
+  const N = matrix.length;
+  const result = createMatrix(N, N);
+  for (let y=0;y<N;y++){
+    for (let x=0;x<N;x++){
+      result[x][N-1-y] = matrix[y][x];
+    }
+  }
+  // trim trailing 0 rows/cols to keep small footprint? We'll keep as-is for simplicity
+  return result;
+}
+
+// Simple wall kick: try offsets [-1,1,-2,2]
+function tryRotate(dir){
+  const rotated = rotate(player.matrix);
+  const oldX = player.pos.x;
+  const offsets = [0, -1, 1, -2, 2];
+  for (let i=0;i<offsets.length;i++){
+    player.matrix = rotated;
+    player.pos.x = oldX + offsets[i];
+    if (!collide(board, player)){
+      return true;
+    }
+  }
+  // if none worked, keep old state
+  player.matrix = rotate(rotated); // rotate back (rotate 3 times clockwise)
+  player.pos.x = oldX;
+  return false;
+}
+
+// Move player horizontally
+function playerMove(dir){
+  player.pos.x += dir;
+  if (collide(board, player)){
+    player.pos.x -= dir;
+  }
+}
+
+// Soft drop
+function playerDrop(){
+  player.pos.y++;
+  if (collide(board, player)){
+    player.pos.y--;
+    // lock piece
+    merge(board, player, COLORS[player.name]);
+    sweep();
+    playerReset();
+  }
+  dropCounter = 0;
+}
+
+// Hard drop
+function hardDrop(){
+  while(!collide(board, player)){
+    player.pos.y++;
+  }
+  player.pos.y--;
+  merge(board, player, COLORS[player.name]);
+  sweep();
+  playerReset();
+  dropCounter = 0;
+}
+
+// Rendering
+function drawBoard(){
+  // Clear board area
+  ctx.clearRect(0,0, canvas.width / SCALE, canvas.height / SCALE);
+  // draw background panels (rounded corners via CSS; canvas fills inside)
+  // draw grid cells from board
+  for (let y=0;y<ROWS;y++){
+    for (let x=0;x<COLS;x++){
+      const cell = board[y][x];
+      if (cell){
+        drawCell(x,y, cell);
+      }
+    }
+  }
+}
+
+function drawPlayer(){
+  // Draw falling piece
+  const m = player.matrix;
+  for (let y=0;y<m.length;y++){
+    for (let x=0;x<m[y].length;x++){
+      if (m[y][x]){
+        drawCell(player.pos.x + x, player.pos.y + y, COLORS[player.name]);
+      }
+    }
+  }
+}
+
+function drawNext(){
+  // Clear next canvas
+  nctx.clearRect(0,0, nextCanvas.width / SCALE, nextCanvas.height / SCALE);
+  // draw next piece centered
+  if (!nextPiece) return;
+  const m = nextPiece.matrix;
+  const pw = nextCanvas.width / SCALE;
+  const ph = nextCanvas.height / SCALE;
+  // determine block size to fit 4x4 area comfortably
+  const block = Math.min(Math.floor(pw / 6), Math.floor(ph / 6));
+  const offsetX = (pw - m[0].length * block) / 2;
+  const offsetY = (ph - m.length * block) / 2;
+  // draw
+  nctx.fillStyle = '#071026';
+  nctx.fillRect(0,0,pw,ph);
+  nctx.save();
+  nctx.translate(offsetX, offsetY);
+  for (let y=0;y<m.length;y++){
+    for (let x=0;x<m[y].length;x++){
+      if (m[y][x]){
+        nctx.fillStyle = COLORS[nextPiece.name];
+        nctx.fillRect(x*block, y*block, block-2, block-2);
+      }
+    }
+  }
+  nctx.restore();
+}
+
+function drawEverything(){
+  drawBoard();
+  if (player && player.matrix) drawPlayer();
+}
+
+// Game loop
+function update(time = 0){
+  if (paused || gameOver){
+    lastTime = time;
+    requestAnimationFrame(update);
+    return;
+  }
+  const dt = time - lastTime;
+  lastTime = time;
+  dropCounter += dt;
+  if (dropCounter > dropInterval){
+    playerDrop();
+  }
+  drawEverything();
+  requestAnimationFrame(update);
+}
+
+// Controls
+document.addEventListener('keydown', e=>{
+  if (gameOver) return;
+  if (e.key === 'ArrowLeft'){ e.preventDefault(); playerMove(-1); drawEverything(); }
+  else if (e.key === 'ArrowRight'){ e.preventDefault(); playerMove(1); drawEverything(); }
+  else if (e.key === 'ArrowDown'){ e.preventDefault(); playerDrop(); drawEverything(); }
+  else if (e.key === 'ArrowUp'){ e.preventDefault(); tryRotate(1); drawEverything(); }
+  else if (e.code === 'Space'){ e.preventDefault(); hardDrop(); drawEverything(); }
+  else if (e.key.toLowerCase() === 'p'){ e.preventDefault(); togglePause(); }
+});
+
+// Buttons
+document.getElementById('leftBtn').addEventListener('click', ()=>{ playerMove(-1); drawEverything();});
+document.getElementById('rightBtn').addEventListener('click', ()=>{ playerMove(1); drawEverything();});
+document.getElementById('downBtn').addEventListener('click', ()=>{ playerDrop(); drawEverything();});
+document.getElementById('rotateBtn').addEventListener('click', ()=>{ tryRotate(1); drawEverything();});
+document.getElementById('pauseBtn').addEventListener('click', togglePause);
+document.getElementById('restartBtn').addEventListener('click', restartGame);
+
+function togglePause(){
+  paused = !paused;
+  document.getElementById('pauseBtn').textContent = paused ? 'Resume' : 'Pause';
+  if (!paused && !gameOver){
+    lastTime = performance.now();
+  }
+}
+
+function restartGame(){
+  board = createMatrix(COLS, ROWS);
+  player = { pos: {x:3,y:0}, matrix: null, name: null };
+  nextPiece = randomPiece();
+  score = 0;
+  lines = 0;
+  dropCounter = 0;
+  dropInterval = 1000;
+  paused = false;
+  gameOver = false;
+  document.getElementById('score').textContent = score;
+  document.getElementById('lines').textContent = 'Lines: ' + lines;
+  playerReset();
+  lastTime = performance.now();
+  drawEverything();
+}
+
+// Initialize: scale board drawing functions based on canvas size
+function init(){
+  resizeCanvases();
+  nextPiece = randomPiece();
+  playerReset();
+  lastTime = performance.now();
+  // Small input debounce for touch? not necessary here
+  requestAnimationFrame(update);
+}
+
+// Kick off
+init();
+
+</script>
+</body>
+</html>
